@@ -19,6 +19,7 @@ imputer = joblib.load(IMPUTER_PATH)
 dft = pd.read_csv(CSV_PATH)
 prediction_2013_2024 = pd.read_csv(PREDICTIONS_PATH)
 dft['DATE'] = pd.to_datetime(dft['DATE'])
+prediction_2013_2024['DATE'] = pd.to_datetime(prediction_2013_2024['DATE'])
 
 # List of features used for prediction
 features = [
@@ -42,31 +43,64 @@ def predict():
     try:
         data = request.get_json()
         date = data.get('date')
-        
-        if pd.to_datetime(date) < pd.to_datetime('2024-12-01'):
-            row = prediction_2013_2024[prediction_2013_2024['DATE'] == date]
-            if row.empty:
-                return jsonify({'error': f'No data available for the date: {date}'})
-            actual = row['POWER_DEMAND'].values[0]
-            predicted = row['Predicted_POWER_DEMAND'].values[0]
-            return jsonify({
-                'date': date,
-                'predicted_power_demand': float(predicted),
-                'actual_power_demand': float(actual)
-            })
-        else:
-            row = dft[dft['DATE'] == date]
-            if row.empty:
-                return jsonify({'error': f'No data available for the date: {date}'})
-            
-            row_features = row[features]
-            row_imputed = imputer.transform(row_features)
-            prediction = model_xgb.predict(row_imputed)[0]
-            return jsonify({
-                'date': date,
-                'predicted_power_demand': float(prediction)
-            })
-    
+        date = pd.to_datetime(date)
+
+        # Fetch past 15 days
+        start_date = date - pd.Timedelta(days=14)
+        past_15_days = pd.date_range(start=start_date, end=date)
+
+        response_data = []
+
+        for single_date in past_15_days:
+            single_date_str = single_date.strftime('%Y-%m-%d')
+
+            if single_date < pd.to_datetime('2024-12-01'):
+                row = prediction_2013_2024[prediction_2013_2024['DATE'] == single_date_str]
+                if not row.empty:
+                    actual = row['POWER_DEMAND'].values[0]
+                    predicted = row['Predicted_POWER_DEMAND'].values[0]
+                    response_data.append({
+                        'date': single_date_str,
+                        'actual_power_demand': float(actual),
+                        'predicted_power_demand': float(predicted)
+                    })
+            else:
+                row = dft[dft['DATE'] == single_date_str]
+                if not row.empty:
+                    row_features = row[features]
+                    row_imputed = imputer.transform(row_features)
+                    prediction = model_xgb.predict(row_imputed)[0]
+                    response_data.append({
+                        'date': single_date_str,
+                        'predicted_power_demand': float(prediction)
+                    })
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+
+@app.route('/past-15-days', methods=['POST'])
+def past_15_days():
+    try:
+        data = request.get_json()
+        date = pd.to_datetime(data.get('date'))
+        start_date = date - pd.Timedelta(days=14)
+
+        filtered_data = prediction_2013_2024[
+            (prediction_2013_2024['DATE'] >= start_date) &
+            (prediction_2013_2024['DATE'] <= date)
+        ]
+
+        if filtered_data.empty:
+            return jsonify({'error': 'No data available for the given range'})
+
+        return jsonify({
+            'dates': filtered_data['DATE'].dt.strftime('%Y-%m-%d').tolist(),
+            'actual_power_demand': filtered_data['POWER_DEMAND'].tolist(),
+            'predicted_power_demand': filtered_data['Predicted_POWER_DEMAND'].tolist()
+        })
     except Exception as e:
         return jsonify({'error': str(e)})
 
